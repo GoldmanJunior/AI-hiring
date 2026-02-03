@@ -5,7 +5,7 @@
 > **PROJET EN COURS DE DEVELOPPEMENT - PREMIERE SOUMISSION**
 >
 > Ce projet constitue une première soumission et n'est pas encore terminé.
->
+> Nous avons classifier les intents en utilisant les mots clés et non un LLM pour ne pas augmenter l'utilisation des tokens et aussi nous avons utiliser Toc comme methode de disambuation apr-s lecture d'articles il s'est avéré être la methode qui nous convient
 > **Travaux restants:**
 > - Lecture d'articles scientifiques pour améliorer l'extraction des données tabulaires depuis les PDFs
 > - Finalisation du Level 4 (optimisations et améliorations)
