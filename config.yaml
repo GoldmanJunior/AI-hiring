@@ -1,0 +1,66 @@
+# Configuration du système hybride SQL + RAG + ToC
+
+# Base de données
+database:
+  path: "etl/elections.db"
+
+# Modèle d'embedding multilingual
+embedding:
+  model_name: "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+  dimension: 384
+  batch_size: 32
+
+# Index FAISS
+faiss:
+  index_path: "rag_index/vectors.faiss"
+  metadata_path: "rag_index/metadata.pkl"
+  index_type: "IndexFlatIP"  # Inner Product (cosine similarity après normalisation)
+
+# RAG Retrieval
+retrieval:
+  top_k: 5
+  min_confidence: 0.5
+  rerank: false
+
+# Classification d'intent (sans LLM - mots-clés uniquement)
+intent:
+  sql_threshold: 0.6
+  weights:
+    high: 3.0
+    medium: 1.5
+    low: 0.5
+
+# Normalisation d'entités
+normalization:
+  fuzzy_threshold: 85
+  localities_aliases: "aliases/localities_aliases.json"
+  parties_aliases: "aliases/parties_aliases.json"
+
+# Groq LLM
+groq:
+  model: "llama-3.3-70b-versatile"
+  temperature: 0.3
+  max_tokens: 1024
+
+# ===== TREE OF CLARIFICATIONS (ToC) =====
+toc:
+  # Génération de clarifications
+  min_disambiguations: 2          # Minimum de DQs à générer
+  max_disambiguations: 5          # Maximum de DQs à générer
+  generation_temperature: 0.7     # Température pour génération (plus élevé = plus diversifié)
+
+  # Élagage et validation
+  min_confidence: 0.3             # Confiance minimum pour garder une DQ
+  min_relevance: 0.4              # Pertinence minimum pour garder une DQ
+
+  # Exécution
+  parallel_execution: true        # Exécuter les DQs en parallèle
+  max_workers: 3                  # Nombre de workers parallèles
+
+  # Fallback
+  fallback_to_simple: true        # Si ToC échoue, essayer mode simple
+
+# Logging
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"

@@ -1,0 +1,54 @@
+# Système Hybride SQL + RAG - Dépendances
+
+# ===== CORE =====
+# Client Groq pour l'API LLM
+groq>=0.4.0
+
+# Gestion des variables d'environnement
+python-dotenv>=1.0.0
+
+# Manipulation de données
+pandas>=2.0.0
+
+# Configuration YAML
+pyyaml>=6.0
+
+# ===== RAG & EMBEDDINGS =====
+# Modèle d'embedding multilingual
+sentence-transformers>=2.2.0
+
+# Index vectoriel FAISS (CPU)
+faiss-cpu>=1.7.4
+
+# ===== NORMALISATION D'ENTITÉS =====
+# Fuzzy matching
+rapidfuzz>=3.0.0
+
+# Suppression des accents
+unidecode>=1.3.0
+
+# ===== EXTRACTION PDF (optionnel) =====
+# Camelot pour extraction de tableaux
+camelot-py[base]>=0.11.0
+opencv-python>=4.8.0
+
+# Alternative: pdfplumber
+pdfplumber>=0.10.0
+
+# ===== EXPORT (optionnel) =====
+openpyxl>=3.1.0
+
+# ===== API REST =====
+# FastAPI framework
+fastapi>=0.104.0
+
+# Serveur ASGI
+uvicorn[standard]>=0.24.0
+
+# Validation (inclus avec FastAPI mais version explicite)
+pydantic>=2.0.0
+
+# ===== DEV (optionnel) =====
+# pytest>=7.0.0
+# black>=23.0.0
+# mypy>=1.0.0

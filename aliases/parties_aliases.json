@@ -1,0 +1,138 @@
+{
+  "_comment": "Dictionnaire d'aliases pour les partis politiques. Clé = forme canonique, Valeur = liste d'aliases",
+
+  "rhdp": [
+    "RHDP",
+    "R.H.D.P",
+    "R.H.D.P.",
+    "rhdp",
+    "Rhdp",
+    "Rassemblement des Houphouëtistes pour la Démocratie et la Paix",
+    "Rassemblement des Houphouetistes",
+    "Houphouëtistes"
+  ],
+
+  "pdci-rda": [
+    "PDCI-RDA",
+    "PDCI RDA",
+    "PDCI",
+    "P.D.C.I",
+    "P.D.C.I-R.D.A",
+    "pdci-rda",
+    "pdci",
+    "Parti Démocratique de Côte d'Ivoire",
+    "Parti Democratique de Cote d'Ivoire"
+  ],
+
+  "fpi": [
+    "FPI",
+    "F.P.I",
+    "F.P.I.",
+    "fpi",
+    "Front Populaire Ivoirien",
+    "Front Populaire"
+  ],
+
+  "independant": [
+    "INDEPENDANT",
+    "INDÉPENDANT",
+    "Indépendant",
+    "Independant",
+    "independant",
+    "indépendant",
+    "IND",
+    "Ind.",
+    "Sans étiquette",
+    "Sans parti"
+  ],
+
+  "udpci": [
+    "UDPCI",
+    "U.D.P.C.I",
+    "udpci",
+    "Union pour la Démocratie et la Paix en Côte d'Ivoire"
+  ],
+
+  "ppa-ci": [
+    "PPA-CI",
+    "PPA CI",
+    "PPACI",
+    "P.P.A-C.I",
+    "ppa-ci",
+    "Parti des Peuples Africains - Côte d'Ivoire"
+  ],
+
+  "eds": [
+    "EDS",
+    "E.D.S",
+    "eds",
+    "Ensemble pour la Démocratie et la Souveraineté"
+  ],
+
+  "unir": [
+    "UNIR",
+    "U.N.I.R",
+    "unir"
+  ],
+
+  "adci": [
+    "ADCI",
+    "A.D.C.I",
+    "adci",
+    "Alliance Démocratique pour la Côte d'Ivoire"
+  ],
+
+  "mgc": [
+    "MGC",
+    "M.G.C",
+    "mgc",
+    "Mouvement des Générations Capables"
+  ],
+
+  "unpr": [
+    "UNPR",
+    "U.N.P.R",
+    "unpr"
+  ],
+
+  "le-buffle": [
+    "LE BUFFLE",
+    "Le Buffle",
+    "le buffle",
+    "BUFFLE"
+  ],
+
+  "rdr": [
+    "RDR",
+    "R.D.R",
+    "rdr",
+    "Rassemblement des Républicains"
+  ],
+
+  "lider": [
+    "LIDER",
+    "L.I.D.E.R",
+    "lider",
+    "Liberté et Démocratie pour la République"
+  ],
+
+  "mfa": [
+    "MFA",
+    "M.F.A",
+    "mfa",
+    "Mouvement des Forces d'Avenir"
+  ],
+
+  "uprgo": [
+    "UPRGO",
+    "U.P.R.G.O",
+    "uprgo"
+  ],
+
+  "cojep": [
+    "COJEP",
+    "C.O.J.E.P",
+    "cojep",
+    "Congrès Panafricain pour la Justice et l'Égalité des Peuples"
+  ]
+}

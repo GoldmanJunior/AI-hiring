@@ -1,0 +1,42 @@
+# ===== ENVIRONNEMENT =====
+.env
+.env.local
+.env.*.local
+
+# ===== PYTHON =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv/
+
+# ===== IDE =====
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ===== INDEX RAG =====
+rag_index/
+*.faiss
+*.pkl
+
+# ===== LOGS =====
+*.log
+logs/
+
+# ===== CACHE =====
+.cache/
+*.cache
+
+# ===== OS =====
+.DS_Store
+Thumbs.db
+
+# ===== TEMPORAIRE =====
+*.tmp
+*.temp
