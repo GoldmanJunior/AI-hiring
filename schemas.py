@@ -22,6 +22,7 @@ class RouteMethod(str, Enum):
 class QueryRequest(BaseModel):
     """Requête de question via ToC (Tree of Clarifications)."""
     question: str = Field(..., min_length=1, max_length=1000, description="Question en langage naturel")
+    session_id: Optional[str] = Field(default=None, description="ID de session pour mémoriser le contexte")
     explain: bool = Field(default=False, description="Inclure les détails de debug")
     top_k: Optional[int] = Field(default=5, ge=1, le=20, description="Nombre de résultats RAG")
 
@@ -29,6 +30,7 @@ class QueryRequest(BaseModel):
         json_schema_extra = {
             "example": {
                 "question": "Quels sont les résultats du RHDP à Abidjan ?",
+                "session_id": None,
                 "explain": False,
                 "top_k": 5
             }

@@ -10,8 +10,10 @@ from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Query, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 import uvicorn
+import json
+import asyncio
 from dotenv import load_dotenv
 
 # Charger les variables d'environnement
@@ -19,13 +21,14 @@ load_dotenv()
 
 # Imports des modules du système
 from schemas import (
-    QueryRequest, QueryResponse,
+    QueryRequest,
     HealthResponse, SchemaResponse, StatsResponse,
     IntentResponse, ErrorResponse
 )
 from toc_router import ToCRouter
 from intent_classifier import IntentClassifier
 from sql_analyzer import SQLAnalyzer
+from session_manager import get_session_manager, SessionManager
 
 # Configuration du logging
 logging.basicConfig(
@@ -41,6 +44,7 @@ class AppState:
     toc_router: Optional[ToCRouter] = None
     intent_classifier: Optional[IntentClassifier] = None
     sql_analyzer: Optional[SQLAnalyzer] = None
+    session_manager: Optional[SessionManager] = None
 
 
 state = AppState()
@@ -59,6 +63,7 @@ async def lifespan(app: FastAPI):
         state.toc_router = ToCRouter()
         state.intent_classifier = IntentClassifier()
         state.sql_analyzer = SQLAnalyzer("etl/elections.db")
+        state.session_manager = get_session_manager()
 
         logger.info("API initialisée avec succès")
     except Exception as e:
@@ -160,52 +165,125 @@ async def health_check():
     )
 
 
-@app.post("/query", response_model=QueryResponse, tags=["Query"])
-async def query_toc(request: QueryRequest):
+@app.post("/query", tags=["Query"])
+async def query_toc_stream(request: QueryRequest):
     """
-    Interroge le système avec le pipeline ToC (Tree of Clarifications).
+    Interroge le système avec streaming SSE (Server-Sent Events).
 
-    Le système:
-    1. Génère plusieurs interprétations de la question
-    2. Route chaque interprétation vers SQL ou RAG
-    3. Exécute les requêtes en parallèle
-    4. Agrège les résultats en une réponse cohérente
+    Retourne les résultats en temps réel:
+    - Étapes du pipeline ToC
+    - Interprétations générées
+    - Résultats SQL/RAG au fur et à mesure
+    - Réponse finale agrégée
+
+    La session mémorise les sélections (localités, partis) pour le contexte.
     """
     if not state.toc_router:
         raise HTTPException(status_code=503, detail="Service non disponible")
 
-    try:
-        logger.info(f"Query ToC: {request.question[:50]}...")
+    # Récupérer ou créer la session
+    session = state.session_manager.get_or_create_session(request.session_id)
+    session_id = session.session_id
 
-        response = state.toc_router.query(request.question, explain=request.explain)
+    # Enrichir la question avec le contexte de session
+    context_prompt = session.get_context_prompt()
+    enriched_question = request.question
+    if context_prompt and not request.question.lower().startswith(("nouveau", "autre", "different")):
+        enriched_question = f"{context_prompt}\n\nQUESTION: {request.question}"
 
-        return QueryResponse(
-            success=response.confidence > 0,
-            original_query=response.original_query,
-            answer=response.final_answer,
-            method=response.method,
-            confidence=response.confidence,
-            interpretations=[
-                {
-                    "dq_id": i.dq_id,
-                    "route": i.route,
-                    "question": i.question,
-                    "answer": i.answer,
-                    "success": i.success,
-                    "sql_query": i.sql_query,
-                    "error": i.error
-                }
-                for i in response.interpretations
-            ],
-            sql_facts=response.sql_facts,
-            rag_insights=response.rag_insights,
-            sources=response.sources,
-            metadata=response.metadata
-        )
+    async def event_generator():
+        try:
+            # Étape 1: Début avec session_id
+            yield f"data: {json.dumps({'event': 'start', 'message': 'Démarrage du pipeline ToC...', 'session_id': session_id})}\n\n"
+            await asyncio.sleep(0.01)
 
-    except Exception as e:
-        logger.error(f"Erreur query ToC: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+            # Étape 2: Génération des clarifications
+            yield f"data: {json.dumps({'event': 'step', 'step': 1, 'message': 'Génération des interprétations...'})}\n\n"
+
+            # Exécuter la requête avec contexte
+            response = await asyncio.to_thread(
+                state.toc_router.query,
+                enriched_question,
+                explain=request.explain
+            )
+
+            # Extraire les entités de la réponse pour la session
+            entities = {
+                "localities": [],
+                "parties": []
+            }
+            for interp in response.interpretations:
+                if hasattr(interp, 'entities'):
+                    entities["localities"].extend(interp.entities.get("localities", []))
+                    entities["parties"].extend(interp.entities.get("parties", []))
+
+            # Mettre à jour la session
+            state.session_manager.update_session(
+                session_id,
+                question=request.question,
+                answer=response.final_answer,
+                entities=entities
+            )
+
+            # Étape 3: Envoyer les interprétations
+            for i, interp in enumerate(response.interpretations):
+                yield f"data: {json.dumps({'event': 'interpretation', 'index': i, 'dq_id': interp.dq_id, 'route': interp.route, 'question': interp.question})}\n\n"
+                await asyncio.sleep(0.01)
+
+            # Étape 4: Résultats
+            yield f"data: {json.dumps({'event': 'step', 'step': 2, 'message': 'Agrégation des résultats...'})}\n\n"
+
+            # Étape 5: Réponse finale avec session
+            final_response = {
+                "event": "complete",
+                "session_id": session_id,
+                "success": response.confidence > 0,
+                "answer": response.final_answer,
+                "confidence": response.confidence,
+                "method": response.method,
+                "sql_facts": response.sql_facts,
+                "rag_insights": response.rag_insights,
+                "sources": response.sources,
+                "session_context": session.to_dict()
+            }
+            yield f"data: {json.dumps(final_response)}\n\n"
+
+        except Exception as e:
+            logger.error(f"Erreur streaming: {e}", exc_info=True)
+            yield f"data: {json.dumps({'event': 'error', 'message': str(e)})}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
+
+
+@app.post("/session", tags=["Session"])
+async def create_session():
+    """Crée une nouvelle session."""
+    session_id = state.session_manager.create_session()
+    return {"session_id": session_id}
+
+
+@app.get("/session/{session_id}", tags=["Session"])
+async def get_session(session_id: str):
+    """Récupère les informations d'une session."""
+    session = state.session_manager.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session non trouvée")
+    return session.to_dict()
+
+
+@app.delete("/session/{session_id}", tags=["Session"])
+async def clear_session(session_id: str):
+    """Efface une session."""
+    state.session_manager.clear_session(session_id)
+    return {"message": "Session effacée", "session_id": session_id}
 
 
 @app.get("/intent", response_model=IntentResponse, tags=["Analysis"])

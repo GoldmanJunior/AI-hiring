@@ -48,6 +48,9 @@ uvicorn[standard]>=0.24.0
 # Validation (inclus avec FastAPI mais version explicite)
 pydantic>=2.0.0
 
+# Streaming SSE
+sse-starlette>=1.6.0
+
 # ===== DEV (optionnel) =====
 # pytest>=7.0.0
 # black>=23.0.0
