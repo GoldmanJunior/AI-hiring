@@ -20,15 +20,15 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Imports des modules du système
-from schemas import (
+from api.schemas import (
     QueryRequest,
     HealthResponse, SchemaResponse, StatsResponse,
     IntentResponse, ErrorResponse
 )
-from toc_router import ToCRouter
-from intent_classifier import IntentClassifier
-from sql_analyzer import SQLAnalyzer
-from session_manager import get_session_manager, SessionManager
+from pipeline.toc_router import ToCRouter
+from retrievers.intent_classifier import IntentClassifier
+from retrievers.sql_analyzer import SQLAnalyzer
+from session.session_manager import get_session_manager, SessionManager
 
 # Configuration du logging
 logging.basicConfig(

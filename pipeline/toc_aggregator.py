@@ -12,8 +12,8 @@ from groq import Groq
 from dotenv import load_dotenv
 import yaml
 
-from toc_pruner import PruningResult, PrunedTree
-from citation_manager import Citation, CitedResponse
+from pipeline.toc_pruner import PruningResult, PrunedTree
+from retrievers.citation_manager import Citation, CitedResponse
 
 logger = logging.getLogger(__name__)
 load_dotenv()

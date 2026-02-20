@@ -15,7 +15,7 @@ import faiss
 from sentence_transformers import SentenceTransformer
 import yaml
 
-from entity_normalizer import EntityNormalizer
+from retrievers.entity_normalizer import EntityNormalizer
 
 logger = logging.getLogger(__name__)
 

@@ -11,8 +11,8 @@ from typing import Optional
 
 import yaml
 
-from clarification_generator import DisambiguatedQuestion, ClarificationTree
-from intent_classifier import IntentClassifier
+from pipeline.clarification_generator import DisambiguatedQuestion, ClarificationTree
+from retrievers.intent_classifier import IntentClassifier
 
 logger = logging.getLogger(__name__)
 

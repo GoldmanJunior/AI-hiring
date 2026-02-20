@@ -12,14 +12,14 @@ from dotenv import load_dotenv
 import yaml
 
 # Imports des composants ToC
-from clarification_generator import ClarificationGenerator, ClarificationTree
-from toc_pruner import ToCPruner, PrunedTree, PruningResult
-from toc_aggregator import ToCAggregator, DQResult, AggregatedResponse
+from pipeline.clarification_generator import ClarificationGenerator, ClarificationTree
+from pipeline.toc_pruner import ToCPruner, PrunedTree, PruningResult
+from pipeline.toc_aggregator import ToCAggregator, DQResult, AggregatedResponse
 
 # Imports des systèmes existants
-from sql_analyzer import SQLAnalyzer
-from rag_retriever import RAGRetriever
-from citation_manager import CitationManager, Citation
+from retrievers.sql_analyzer import SQLAnalyzer
+from retrievers.rag_retriever import RAGRetriever
+from retrievers.citation_manager import CitationManager, Citation
 
 logger = logging.getLogger(__name__)
 load_dotenv()

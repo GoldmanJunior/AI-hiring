@@ -146,37 +146,42 @@ Question Utilisateur
 
 ```
 Ai hiring/
-├── api.py                    # Point d'entrée FastAPI
-├── schemas.py                # Modèles Pydantic
 ├── config.yaml               # Configuration centrale
 ├── requirements.txt          # Dépendances Python
 ├── .env                      # Variables d'environnement (à créer)
 ├── .env.example              # Exemple de configuration
 │
-├── # === PIPELINE ToC ===
-├── toc_router.py             # Orchestrateur principal
-├── clarification_generator.py # Génération des interprétations
-├── toc_pruner.py             # Élagage et routage
-├── toc_aggregator.py         # Agrégation des résultats
+├── api/                      # === API REST ===
+│   ├── main.py               # Point d'entrée FastAPI
+│   └── schemas.py            # Modèles Pydantic
 │
-├── # === COMPOSANTS ===
-├── sql_analyzer.py           # Conversion NL -> SQL + exécution
-├── rag_retriever.py          # Recherche vectorielle FAISS
-├── rag_indexer.py            # Création de l'index RAG
-├── index_database.py         # Indexation de la BD
-├── intent_classifier.py      # Classification SQL/RAG (keywords)
-├── entity_normalizer.py      # Normalisation entités (fuzzy)
-├── citation_manager.py       # Gestion des sources/citations
+├── pipeline/                 # === PIPELINE ToC ===
+│   ├── toc_router.py         # Orchestrateur principal
+│   ├── clarification_generator.py # Génération des interprétations
+│   ├── toc_pruner.py         # Élagage et routage
+│   └── toc_aggregator.py     # Agrégation des résultats
 │
-├── # === ETL ===
-├── extract_pdf_table.py      # Extraction tableaux PDF
-├── etl/
+├── retrievers/               # === COMPOSANTS DE RECHERCHE ===
+│   ├── sql_analyzer.py       # Conversion NL -> SQL + exécution
+│   ├── rag_retriever.py      # Recherche vectorielle FAISS
+│   ├── rag_indexer.py        # Création de l'index RAG
+│   ├── intent_classifier.py  # Classification SQL/RAG (keywords)
+│   ├── entity_normalizer.py  # Normalisation entités (fuzzy)
+│   └── citation_manager.py   # Gestion des sources/citations
+│
+├── session/                  # === GESTION DE SESSION ===
+│   └── session_manager.py    # Mémorisation du contexte utilisateur
+│
+├── scripts/                  # === SCRIPTS ===
+│   ├── index_database.py     # Indexation de la BD
+│   └── extract_pdf_table.py  # Extraction tableaux PDF
+│
+├── etl/                      # === ETL ===
 │   ├── clean_csv.py          # Nettoyage données CSV
 │   ├── load_data.py          # Chargement dans SQLite
 │   └── elections.db          # Base de données SQLite
 │
-├── # === DONNÉES ===
-├── aliases/
+├── aliases/                  # === DONNÉES ===
 │   ├── localities_aliases.json  # Alias localités
 │   └── parties_aliases.json     # Alias partis politiques
 │
@@ -237,7 +242,7 @@ GROQ_MODEL=llama-3.3-70b-versatile
 Si vous avez un nouveau PDF de résultats électoraux:
 
 ```bash
-python extract_pdf_table.py
+python -m scripts.extract_pdf_table
 ```
 
 Cela génère un fichier CSV avec les données extraites.
@@ -263,7 +268,7 @@ Crée/remplit la base `etl/elections.db` avec les tables:
 ### Étape 4: Création de l'index RAG
 
 ```bash
-python index_database.py
+python -m scripts.index_database
 ```
 
 Génère l'index FAISS dans `rag_index/`:
@@ -273,7 +278,7 @@ Génère l'index FAISS dans `rag_index/`:
 ### Étape 5: Démarrer l'API
 
 ```bash
-uvicorn api:app --reload --host localhost --port 8000
+uvicorn api.main:app --reload --host localhost --port 8000
 ```
 
 L'API est accessible sur `http://localhost:8000`

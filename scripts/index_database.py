@@ -4,9 +4,9 @@ Script d'indexation initiale pour le système RAG.
 Crée l'index FAISS et les métadonnées à partir de la base SQLite.
 
 Usage:
-    python index_database.py
-    python index_database.py --config custom_config.yaml
-    python index_database.py --force  # Réindexer même si l'index existe
+    python -m scripts.index_database
+    python -m scripts.index_database --config custom_config.yaml
+    python -m scripts.index_database --force  # Réindexer même si l'index existe
 """
 
 import argparse
@@ -14,7 +14,7 @@ import logging
 import os
 import sys
 
-from rag_indexer import RAGIndexer
+from retrievers.rag_indexer import RAGIndexer
 
 # Configuration du logging
 logging.basicConfig(
