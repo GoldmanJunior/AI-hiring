@@ -5,6 +5,7 @@ Sécurisé : SEULES les requêtes SELECT sont autorisées.
 
 import sqlite3
 import re
+import time
 import logging
 import os
 from typing import Optional, Any
@@ -12,12 +13,8 @@ from dataclasses import dataclass
 
 from groq import Groq
 from dotenv import load_dotenv
+import observability as obs
 
-# Configuration du logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
 logger = logging.getLogger(__name__)
 
 
@@ -61,7 +58,6 @@ class QueryResult:
 class SQLValidator:
     """Validateur de sécurité pour les requêtes SQL."""
 
-    # Mots-clés SQL interdits (modification de données)
     FORBIDDEN_KEYWORDS = [
         r'\bUPDATE\b',
         r'\bDELETE\b',
@@ -104,36 +100,29 @@ class SQLValidator:
         if not sql or not sql.strip():
             return False, "Requête SQL vide"
 
-        # Normaliser la requête
         sql_normalized = sql.strip().upper()
 
-        # Vérifier que la requête commence par SELECT ou WITH (CTE)
         if not (sql_normalized.startswith('SELECT') or sql_normalized.startswith('WITH')):
             return False, "Seules les requêtes SELECT sont autorisées"
 
-        # Vérifier l'absence de mots-clés interdits
         for pattern in cls.FORBIDDEN_KEYWORDS:
             if re.search(pattern, sql_normalized, re.IGNORECASE):
                 keyword = pattern.replace(r'\b', '').upper()
                 return False, f"Mot-clé interdit détecté: {keyword}"
 
-        # Vérifier l'absence de commentaires SQL (injection potentielle)
         for pattern in cls.COMMENT_PATTERNS:
             if pattern in sql:
                 return False, f"Commentaires SQL non autorisés: {pattern}"
 
-        # Vérifier l'absence de points-virgules multiples (injection)
         if sql.count(';') > 1:
             return False, "Requêtes multiples non autorisées"
 
-        # Vérifier l'absence de UNION avec sous-requêtes dangereuses
         if 'UNION' in sql_normalized:
             # Autoriser UNION mais vérifier qu'il n'y a pas de requêtes dangereuses après
             parts = re.split(r'\bUNION\b', sql_normalized, flags=re.IGNORECASE)
             for part in parts:
                 part = part.strip()
                 if part and not (part.startswith('SELECT') or part.startswith('ALL SELECT') or part.startswith('(')):
-                    # Vérifier si c'est juste "ALL" suivi de SELECT
                     if not re.match(r'^ALL\s+SELECT', part):
                         return False, "UNION avec requête non-SELECT détecté"
 
@@ -150,12 +139,8 @@ class SQLValidator:
         Returns:
             La requête nettoyée
         """
-        # Supprimer les espaces multiples
         sql = re.sub(r'\s+', ' ', sql.strip())
-
-        # Supprimer le point-virgule final si présent
         sql = sql.rstrip(';')
-
         return sql
 
 
@@ -208,7 +193,6 @@ class SchemaExtractor:
         for table in tables:
             columns = self.get_table_schema(table)
 
-            # Description de la table
             table_desc = f"TABLE: {table}\n"
             table_desc += "COLONNES:\n"
 
@@ -217,7 +201,6 @@ class SchemaExtractor:
                 nullable = " (nullable)" if col["nullable"] else " (NOT NULL)"
                 table_desc += f"  - {col['name']}: {col['type']}{pk}{nullable}\n"
 
-            # Échantillon de données
             if include_samples:
                 try:
                     samples = self.get_table_sample(table)
@@ -273,14 +256,11 @@ IMPORTANT: Réponds UNIQUEMENT avec la requête SQL, rien d'autre."""
             groq_api_key: Clé API Groq (optionnel si dans .env)
             model: Modèle Groq à utiliser
         """
-        # Charger les variables d'environnement
         load_dotenv()
 
-        # Initialiser la connexion à la base de données
         self.db_path = db_path
         self.connection = self._connect_db()
 
-        # Initialiser le client Groq
         api_key = groq_api_key or os.getenv("GROQ_API_KEY")
         if not api_key:
             raise ValueError("Clé API Groq requise (paramètre ou variable GROQ_API_KEY)")
@@ -288,7 +268,6 @@ IMPORTANT: Réponds UNIQUEMENT avec la requête SQL, rien d'autre."""
         self.groq_client = Groq(api_key=api_key)
         self.model = model
 
-        # Extraire le schéma
         self.schema_extractor = SchemaExtractor(self.connection)
         self.schema = self.schema_extractor.get_full_schema()
 
@@ -316,17 +295,20 @@ IMPORTANT: Réponds UNIQUEMENT avec la requête SQL, rien d'autre."""
             Requête SQL générée
         """
         system_prompt = self.SYSTEM_PROMPT.format(schema=self.schema)
+        _messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": question},
+        ]
 
         try:
+            _t0 = time.monotonic()
             response = self.groq_client.chat.completions.create(
                 model=self.model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": question}
-                ],
+                messages=_messages,
                 temperature=0.1,  # Basse température pour plus de précision
                 max_tokens=1024
             )
+            _duration_ms = int((time.monotonic() - _t0) * 1000)
 
             sql = response.choices[0].message.content.strip()
 
@@ -336,10 +318,31 @@ IMPORTANT: Réponds UNIQUEMENT avec la requête SQL, rien d'autre."""
             sql = sql.strip()
 
             logger.info(f"SQL généré: {sql}")
+
+            obs.record_generation(
+                name="sql_generation",
+                model=self.model,
+                input_messages=_messages,
+                output=sql,
+                prompt_tokens=response.usage.prompt_tokens,
+                completion_tokens=response.usage.completion_tokens,
+                total_tokens=response.usage.total_tokens,
+                temperature=0.1,
+                duration_ms=_duration_ms,
+                metadata={"question_length": len(question)},
+            )
+
             return sql
 
         except Exception as e:
             logger.error(f"Erreur Groq API: {e}")
+            obs.record_generation(
+                name="sql_generation",
+                model=self.model,
+                input_messages=_messages,
+                output="",
+                error=str(e),
+            )
             raise LLMError(f"Erreur lors de la génération SQL: {e}")
 
     def _execute_sql(self, sql: str) -> QueryResult:
@@ -352,14 +355,16 @@ IMPORTANT: Réponds UNIQUEMENT avec la requête SQL, rien d'autre."""
         Returns:
             QueryResult avec les résultats
         """
+        _span, _t0 = obs.new_span("sql_db_execution", metadata={"sql": sql})
+
         try:
             cursor = self.connection.execute(sql)
             columns = [description[0] for description in cursor.description]
             rows = cursor.fetchall()
 
-            # Convertir en liste de dictionnaires
             data = [dict(zip(columns, row)) for row in rows]
 
+            obs.end_span(_span, _t0, metadata={"row_count": len(data), "success": True})
             return QueryResult(
                 success=True,
                 data=data,
@@ -370,6 +375,7 @@ IMPORTANT: Réponds UNIQUEMENT avec la requête SQL, rien d'autre."""
 
         except sqlite3.Error as e:
             logger.error(f"Erreur SQL: {e}")
+            obs.end_span(_span, _t0, error=str(e))
             return QueryResult(
                 success=False,
                 data=[],
@@ -391,7 +397,6 @@ IMPORTANT: Réponds UNIQUEMENT avec la requête SQL, rien d'autre."""
         """
         logger.info(f"Question reçue: {question}")
 
-        # Étape 1: Générer le SQL via Groq
         try:
             sql = self._generate_sql(question)
         except LLMError as e:
@@ -404,7 +409,6 @@ IMPORTANT: Réponds UNIQUEMENT avec la requête SQL, rien d'autre."""
                 error=str(e)
             )
 
-        # Vérifier si le LLM a indiqué que c'est impossible
         if sql.upper() == "IMPOSSIBLE":
             return QueryResult(
                 success=False,
@@ -415,13 +419,17 @@ IMPORTANT: Réponds UNIQUEMENT avec la requête SQL, rien d'autre."""
                 error="Cette question ne peut pas être convertie en requête SELECT"
             )
 
-        # Étape 2: Nettoyer le SQL
         sql = SQLValidator.sanitize(sql)
 
-        # Étape 3: Valider la sécurité
         is_valid, error_message = SQLValidator.validate(sql)
         if not is_valid:
             logger.warning(f"Requête rejetée pour raison de sécurité: {error_message}")
+            _blocked_span, _b0 = obs.new_span("sql_security_blocked", metadata={
+                "sql": sql,
+                "reason": error_message,
+                "blocked": True,
+            })
+            obs.end_span(_blocked_span, _b0, error=f"BLOCKED: {error_message}")
             return QueryResult(
                 success=False,
                 data=[],
@@ -431,7 +439,6 @@ IMPORTANT: Réponds UNIQUEMENT avec la requête SQL, rien d'autre."""
                 error=f"Requête rejetée: {error_message}"
             )
 
-        # Étape 4: Exécuter la requête
         return self._execute_sql(sql)
 
     def get_schema(self) -> str:
@@ -455,7 +462,6 @@ IMPORTANT: Réponds UNIQUEMENT avec la requête SQL, rien d'autre."""
         self.close()
 
 
-# Fonction utilitaire pour utilisation rapide
 def quick_query(
     db_path: str,
     question: str,

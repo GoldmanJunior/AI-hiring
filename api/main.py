@@ -1,9 +1,12 @@
-"""
-API FastAPI pour le système hybride SQL + RAG + ToC.
-Expose les endpoints pour interroger la base de données électorale.
-"""
+# ── Ensure project root is in sys.path regardless of how this file is run ──
+import sys
+import pathlib
+_project_root = str(pathlib.Path(__file__).resolve().parent.parent)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
 
 import os
+os.chdir(_project_root)  # Ensure all relative paths resolve from project root
 import logging
 from contextlib import asynccontextmanager
 from typing import Optional
@@ -14,12 +17,14 @@ from fastapi.responses import JSONResponse, StreamingResponse
 import uvicorn
 import json
 import asyncio
+import time
 from dotenv import load_dotenv
 
-# Charger les variables d'environnement
+# Charger les variables d'environnement AVANT tout autre import du projet
 load_dotenv()
 
-# Imports des modules du système
+import observability as obs
+
 from api.schemas import (
     QueryRequest,
     HealthResponse, SchemaResponse, StatsResponse,
@@ -30,14 +35,12 @@ from retrievers.intent_classifier import IntentClassifier
 from retrievers.sql_analyzer import SQLAnalyzer
 from session.session_manager import get_session_manager, SessionManager
 
-# Configuration du logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-# ===== GLOBAL STATE =====
 
 class AppState:
     """État global de l'application."""
@@ -50,16 +53,15 @@ class AppState:
 state = AppState()
 
 
-# ===== LIFESPAN =====
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Gestion du cycle de vie de l'application."""
-    # Startup
     logger.info("Initialisation de l'API...")
 
     try:
-        # Initialiser les composants
+        # Initialiser Langfuse (fail-fast pour voir les erreurs au démarrage)
+        obs._get_client()
+
         state.toc_router = ToCRouter()
         state.intent_classifier = IntentClassifier()
         state.sql_analyzer = SQLAnalyzer("etl/elections.db")
@@ -72,15 +74,12 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    # Shutdown
     logger.info("Arrêt de l'API...")
     if state.toc_router:
         state.toc_router.close()
     if state.sql_analyzer:
         state.sql_analyzer.close()
 
-
-# ===== APPLICATION =====
 
 app = FastAPI(
     title="Elections API",
@@ -105,7 +104,6 @@ Seules les requêtes SELECT sont autorisées. Aucune modification de données n'
     redoc_url="/redoc"
 )
 
-# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # À restreindre en production
@@ -114,8 +112,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
-# ===== EXCEPTION HANDLERS =====
 
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request, exc):
@@ -133,8 +129,6 @@ async def general_exception_handler(request, exc):
         content={"error": "Erreur interne du serveur", "detail": str(exc), "code": "INTERNAL_ERROR"}
     )
 
-
-# ===== ENDPOINTS =====
 
 @app.get("/", tags=["General"])
 async def root():
@@ -181,33 +175,41 @@ async def query_toc_stream(request: QueryRequest):
     if not state.toc_router:
         raise HTTPException(status_code=503, detail="Service non disponible")
 
-    # Récupérer ou créer la session
     session = state.session_manager.get_or_create_session(request.session_id)
     session_id = session.session_id
 
-    # Enrichir la question avec le contexte de session
     context_prompt = session.get_context_prompt()
     enriched_question = request.question
     if context_prompt and not request.question.lower().startswith(("nouveau", "autre", "different")):
         enriched_question = f"{context_prompt}\n\nQUESTION: {request.question}"
 
     async def event_generator():
+        # ── Observability: root trace (ContextVar propagates into asyncio.to_thread) ──
+        trace = obs.start_trace(
+            name="toc_query",
+            session_id=session_id,
+            input_query=request.question,
+            metadata={
+                "explain": request.explain,
+                "top_k": request.top_k,
+                "has_session_context": bool(context_prompt),
+            },
+        )
+        _request_start = time.monotonic()
+
         try:
-            # Étape 1: Début avec session_id
             yield f"data: {json.dumps({'event': 'start', 'message': 'Démarrage du pipeline ToC...', 'session_id': session_id})}\n\n"
             await asyncio.sleep(0.01)
 
-            # Étape 2: Génération des clarifications
             yield f"data: {json.dumps({'event': 'step', 'step': 1, 'message': 'Génération des interprétations...'})}\n\n"
 
-            # Exécuter la requête avec contexte
+            # _active_trace ContextVar is copied into the thread automatically
             response = await asyncio.to_thread(
                 state.toc_router.query,
                 enriched_question,
                 explain=request.explain
             )
 
-            # Extraire les entités de la réponse pour la session
             entities = {
                 "localities": [],
                 "parties": []
@@ -217,7 +219,6 @@ async def query_toc_stream(request: QueryRequest):
                     entities["localities"].extend(interp.entities.get("localities", []))
                     entities["parties"].extend(interp.entities.get("parties", []))
 
-            # Mettre à jour la session
             state.session_manager.update_session(
                 session_id,
                 question=request.question,
@@ -225,15 +226,12 @@ async def query_toc_stream(request: QueryRequest):
                 entities=entities
             )
 
-            # Étape 3: Envoyer les interprétations
             for i, interp in enumerate(response.interpretations):
                 yield f"data: {json.dumps({'event': 'interpretation', 'index': i, 'dq_id': interp.dq_id, 'route': interp.route, 'question': interp.question})}\n\n"
                 await asyncio.sleep(0.01)
 
-            # Étape 4: Résultats
             yield f"data: {json.dumps({'event': 'step', 'step': 2, 'message': 'Agrégation des résultats...'})}\n\n"
 
-            # Étape 5: Réponse finale avec session
             final_response = {
                 "event": "complete",
                 "session_id": session_id,
@@ -248,8 +246,26 @@ async def query_toc_stream(request: QueryRequest):
             }
             yield f"data: {json.dumps(final_response)}\n\n"
 
+            obs.finish_trace(
+                trace,
+                output=response.final_answer,
+                metadata={
+                    "confidence": response.confidence,
+                    "method": response.method,
+                    "num_interpretations": len(response.interpretations),
+                    "sql_routes": sum(1 for i in response.interpretations if i.route == "sql"),
+                    "rag_routes": sum(1 for i in response.interpretations if i.route == "rag"),
+                },
+                total_duration_ms=int((time.monotonic() - _request_start) * 1000),
+            )
+
         except Exception as e:
             logger.error(f"Erreur streaming: {e}", exc_info=True)
+            obs.finish_trace(
+                trace,
+                metadata={"error": str(e)},
+                total_duration_ms=int((time.monotonic() - _request_start) * 1000),
+            )
             yield f"data: {json.dumps({'event': 'error', 'message': str(e)})}\n\n"
 
     return StreamingResponse(
@@ -379,8 +395,6 @@ async def get_table_sample(
         raise HTTPException(status_code=500, detail=result.error)
 
 
-# ===== MAIN =====
-
 def main():
     """Point d'entrée principal."""
     import argparse
@@ -402,7 +416,7 @@ def main():
     print("=" * 60)
 
     uvicorn.run(
-        "api:app",
+        "api.main:app",
         host=args.host,
         port=args.port,
         reload=args.reload,

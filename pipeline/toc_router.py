@@ -1,22 +1,24 @@
-"""
-ToC Router - Routeur principal Tree of Clarifications.
-Orchestre la génération, le routage, l'exécution et l'agrégation.
-"""
+import sys
+import pathlib
+_project_root = str(pathlib.Path(__file__).resolve().parent.parent)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
 
 import os
+import time
 import logging
+import contextvars
 from typing import Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from dotenv import load_dotenv
 import yaml
+import observability as obs
 
-# Imports des composants ToC
 from pipeline.clarification_generator import ClarificationGenerator, ClarificationTree
 from pipeline.toc_pruner import ToCPruner, PrunedTree, PruningResult
 from pipeline.toc_aggregator import ToCAggregator, DQResult, AggregatedResponse
 
-# Imports des systèmes existants
 from retrievers.sql_analyzer import SQLAnalyzer
 from retrievers.rag_retriever import RAGRetriever
 from retrievers.citation_manager import CitationManager, Citation
@@ -47,25 +49,21 @@ class ToCRouter:
         self.config = self._load_config(config_path)
         self.config_path = config_path
 
-        # Configuration ToC
         toc_config = self.config.get("toc", {})
         self.parallel_execution = toc_config.get("parallel_execution", True)
         self.max_workers = toc_config.get("max_workers", 3)
         self.fallback_to_simple = toc_config.get("fallback_to_simple", True)
 
-        # Initialiser les composants ToC
         logger.info("Initialisation des composants ToC...")
 
         self.clarification_generator = ClarificationGenerator(config_path)
         self.pruner = ToCPruner(config_path)
         self.aggregator = ToCAggregator(config_path)
 
-        # Initialiser les systèmes d'exécution
         db_path = self.config.get("database", {}).get("path", "etl/elections.db")
         self.sql_analyzer = SQLAnalyzer(db_path)
         self.citation_manager = CitationManager()
 
-        # RAG (optionnel)
         try:
             self.rag_retriever = RAGRetriever(config_path)
             self.rag_available = True
@@ -74,7 +72,6 @@ class ToCRouter:
             self.rag_retriever = None
             self.rag_available = False
 
-        # Client Groq pour génération RAG
         from groq import Groq
         api_key = os.getenv("GROQ_API_KEY")
         self.groq_client = Groq(api_key=api_key) if api_key else None
@@ -102,11 +99,15 @@ class ToCRouter:
         dq = pruning_result.dq
         logger.info(f"Exécution SQL: {dq.dq_id}")
 
+        _span, _t0 = obs.new_span(
+            "sql_dq_execution",
+            metadata={"dq_id": dq.dq_id, "question": dq.explicit_question[:120]},
+        )
+
         try:
             result = self.sql_analyzer.query(dq.explicit_question)
 
             if result.success:
-                # Créer les citations
                 sources = []
                 for row in result.data[:10]:
                     sources.append(Citation(
@@ -119,8 +120,13 @@ class ToCRouter:
                         parties=[]
                     ))
 
-                # Formater la réponse
                 answer = self._format_sql_answer(result.data, result.columns)
+
+                obs.end_span(_span, _t0, metadata={
+                    "sql_query": result.sql_query,
+                    "row_count": result.row_count,
+                    "success": True,
+                })
 
                 return DQResult(
                     dq_id=dq.dq_id,
@@ -132,6 +138,11 @@ class ToCRouter:
                     sql_query=result.sql_query
                 )
             else:
+                obs.end_span(_span, _t0, metadata={
+                    "sql_query": result.sql_query,
+                    "success": False,
+                }, error=result.error)
+
                 return DQResult(
                     dq_id=dq.dq_id,
                     route="sql",
@@ -145,6 +156,7 @@ class ToCRouter:
 
         except Exception as e:
             logger.error(f"Erreur SQL {dq.dq_id}: {e}")
+            obs.end_span(_span, _t0, error=str(e))
             return DQResult(
                 dq_id=dq.dq_id,
                 route="sql",
@@ -168,7 +180,13 @@ class ToCRouter:
         dq = pruning_result.dq
         logger.info(f"Exécution RAG: {dq.dq_id}")
 
+        _span, _t0 = obs.new_span(
+            "rag_dq_execution",
+            metadata={"dq_id": dq.dq_id, "question": dq.explicit_question[:120]},
+        )
+
         if not self.rag_available:
+            obs.end_span(_span, _t0, error="RAG non disponible")
             return DQResult(
                 dq_id=dq.dq_id,
                 route="rag",
@@ -180,10 +198,12 @@ class ToCRouter:
             )
 
         try:
-            # Recherche vectorielle
+            _retrieval_t0 = time.monotonic()
             search_results = self.rag_retriever.search_with_context(dq.explicit_question)
+            _retrieval_ms = int((time.monotonic() - _retrieval_t0) * 1000)
 
             if search_results["num_results"] == 0:
+                obs.end_span(_span, _t0, metadata={"num_results": 0}, error="Aucun résultat RAG")
                 return DQResult(
                     dq_id=dq.dq_id,
                     route="rag",
@@ -194,10 +214,19 @@ class ToCRouter:
                     error="Aucun résultat RAG"
                 )
 
-            # Générer la réponse avec LLM
+            _scores = [r.get("score", 0.0) for r in search_results["results"]]
+            _retrieval_span, _r0 = obs.new_span("rag_retrieval", metadata={
+                "dq_id": dq.dq_id,
+                "top_k": search_results["num_results"],
+                "top_score": round(_scores[0], 4) if _scores else 0,
+                "avg_score": round(sum(_scores) / len(_scores), 4) if _scores else 0,
+                "doc_ids": [r.get("chunk_id") for r in search_results["results"]],
+                "retrieval_latency_ms": _retrieval_ms,
+            })
+            obs.end_span(_retrieval_span, _r0)
+
             answer = self._generate_rag_answer(dq.explicit_question, search_results["context"])
 
-            # Créer les citations
             sources = []
             for result in search_results["results"]:
                 sources.append(Citation(
@@ -210,6 +239,7 @@ class ToCRouter:
                     parties=result.get("parties", [])
                 ))
 
+            obs.end_span(_span, _t0, metadata={"num_results": search_results["num_results"], "success": True})
             return DQResult(
                 dq_id=dq.dq_id,
                 route="rag",
@@ -221,6 +251,7 @@ class ToCRouter:
 
         except Exception as e:
             logger.error(f"Erreur RAG {dq.dq_id}: {e}")
+            obs.end_span(_span, _t0, error=str(e))
             return DQResult(
                 dq_id=dq.dq_id,
                 route="rag",
@@ -236,6 +267,7 @@ class ToCRouter:
         if not self.groq_client:
             return f"Contexte trouvé mais génération LLM non disponible.\n\n{context[:500]}"
 
+        _model = self.config.get("groq", {}).get("model", "llama-3.3-70b-versatile")
         prompt = f"""Tu es un assistant expert en données électorales.
 
 CONTEXTE:
@@ -245,16 +277,41 @@ QUESTION: {question}
 
 Réponds de manière concise et précise en utilisant uniquement les informations du contexte."""
 
+        _messages = [{"role": "user", "content": prompt}]
+
         try:
+            _t0 = time.monotonic()
             response = self.groq_client.chat.completions.create(
-                model=self.config.get("groq", {}).get("model", "llama-3.3-70b-versatile"),
-                messages=[{"role": "user", "content": prompt}],
+                model=_model,
+                messages=_messages,
                 temperature=0.3,
                 max_tokens=512
             )
-            return response.choices[0].message.content.strip()
+            _duration_ms = int((time.monotonic() - _t0) * 1000)
+            output = response.choices[0].message.content.strip()
+
+            obs.record_generation(
+                name="rag_answer_generation",
+                model=_model,
+                input_messages=_messages,
+                output=output,
+                prompt_tokens=response.usage.prompt_tokens,
+                completion_tokens=response.usage.completion_tokens,
+                total_tokens=response.usage.total_tokens,
+                temperature=0.3,
+                duration_ms=_duration_ms,
+            )
+
+            return output
         except Exception as e:
             logger.error(f"Erreur génération RAG: {e}")
+            obs.record_generation(
+                name="rag_answer_generation",
+                model=_model,
+                input_messages=_messages,
+                output="",
+                error=str(e),
+            )
             return f"Erreur de génération. Contexte:\n{context[:300]}"
 
     def _format_sql_answer(self, data: list[dict], columns: list[str]) -> str:
@@ -269,7 +326,6 @@ Réponds de manière concise et précise en utilisant uniquement les information
                 return f"{columns[0]}: {value:,}" if isinstance(value, int) else f"{columns[0]}: {value:.2f}"
             return f"{columns[0]}: {value}"
 
-        # Plusieurs résultats - format liste
         lines = []
         for i, row in enumerate(data[:20], 1):
             parts = []
@@ -328,8 +384,6 @@ Réponds de manière concise et précise en utilisant uniquement les information
         """
         logger.info(f"ToC Query: '{question[:50]}...'")
 
-        # STEP 1: Génération des clarifications
-        logger.info("STEP 1: Génération des DQs...")
         clarification_tree = self.clarification_generator.generate(question)
 
         if explain:
@@ -337,14 +391,18 @@ Réponds de manière concise et précise en utilisant uniquement les information
             for dq in clarification_tree.disambiguated_questions:
                 logger.info(f"    [{dq.dq_id}] {dq.interpretation}")
 
-        # STEP 2: Élagage et routage
-        logger.info("STEP 2: Élagage et routage...")
+        _prune_span, _p0 = obs.new_span("pruning_routing", metadata={"dqs_generated": len(clarification_tree.disambiguated_questions)})
         pruned_tree = self.pruner.prune(clarification_tree)
+        obs.end_span(_prune_span, _p0, metadata={
+            "valid_dqs": len(pruned_tree.valid_dqs),
+            "pruned_dqs": len(pruned_tree.pruned_dqs),
+            "sql_routes": pruned_tree.pruning_metadata.get("sql_routes", 0),
+            "rag_routes": pruned_tree.pruning_metadata.get("rag_routes", 0),
+        })
 
         if explain:
             logger.info(f"  Valides: {len(pruned_tree.valid_dqs)}, Élaguées: {len(pruned_tree.pruned_dqs)}")
 
-        # Vérifier qu'on a des DQs valides
         if not pruned_tree.valid_dqs:
             logger.warning("Aucune DQ valide, fallback vers requête simple")
             if self.fallback_to_simple:
@@ -362,17 +420,16 @@ Réponds de manière concise et précise en utilisant uniquement les information
                     metadata={"error": "Aucune interprétation valide"}
                 )
 
-        # STEP 3 & 4: Exécution (parallèle ou séquentielle)
-        logger.info(f"STEP 3-4: Exécution de {len(pruned_tree.valid_dqs)} DQs...")
         results = []
 
         if self.parallel_execution and len(pruned_tree.valid_dqs) > 1:
-            # Exécution parallèle
+            # Each task gets its own copy of the current context so that
+            # _active_trace propagates into worker threads independently.
             with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-                futures = {
-                    executor.submit(self._execute_dq, pr): pr
-                    for pr in pruned_tree.valid_dqs
-                }
+                futures = {}
+                for pr in pruned_tree.valid_dqs:
+                    _ctx = contextvars.copy_context()
+                    futures[executor.submit(_ctx.run, self._execute_dq, pr)] = pr
                 for future in as_completed(futures):
                     try:
                         result = future.result()
@@ -390,16 +447,12 @@ Réponds de manière concise et précise en utilisant uniquement les information
                             error=str(e)
                         ))
         else:
-            # Exécution séquentielle
             for pr in pruned_tree.valid_dqs:
                 result = self._execute_dq(pr)
                 results.append(result)
 
-        # STEP 5 & 6: Agrégation
-        logger.info("STEP 5-6: Agrégation...")
         response = self.aggregator.aggregate(question, results)
 
-        # Ajouter les métadonnées de debug si demandé
         if explain:
             response.metadata.update({
                 "dqs_generated": len(clarification_tree.disambiguated_questions),
@@ -426,7 +479,6 @@ Réponds de manière concise et précise en utilisant uniquement les information
         """
         logger.info("Fallback vers exécution simple...")
 
-        # Essayer SQL d'abord
         sql_result = self.sql_analyzer.query(question)
 
         if sql_result.success:
@@ -451,7 +503,6 @@ Réponds de manière concise et précise en utilisant uniquement les information
                 metadata={"fallback": True}
             )
 
-        # Essayer RAG
         if self.rag_available:
             try:
                 search_results = self.rag_retriever.search_with_context(question)
@@ -478,7 +529,6 @@ Réponds de manière concise et précise en utilisant uniquement les information
             except Exception as e:
                 logger.error(f"Erreur RAG fallback: {e}")
 
-        # Échec total
         return AggregatedResponse(
             original_query=question,
             final_answer="Impossible de répondre à cette question.",
@@ -502,7 +552,6 @@ Réponds de manière concise et précise en utilisant uniquement les information
         self.close()
 
 
-# Mode interactif
 def interactive_mode():
     """Lance le mode interactif ToC."""
     print("=" * 60)
@@ -525,16 +574,13 @@ def interactive_mode():
                     print("Au revoir!")
                     break
 
-                # Mode explain
                 explain = False
                 if question.lower().startswith('explain:'):
                     explain = True
                     question = question[8:].strip()
 
-                # Exécuter
                 response = router.query(question, explain=explain)
 
-                # Afficher
                 print("\n" + router.aggregator.format_response(response))
 
                 if explain:

@@ -1,7 +1,8 @@
-"""
-Indexeur RAG avec FAISS et embeddings multilingues.
-Crée des chunks textuels à partir de la base SQLite et les indexe.
-"""
+import sys
+import pathlib
+_project_root = str(pathlib.Path(__file__).resolve().parent.parent)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
 
 import os
 import pickle
@@ -50,7 +51,6 @@ class RAGIndexer:
         """
         self.config = self._load_config(config_path)
 
-        # Configuration
         embedding_config = self.config.get("embedding", {})
         self.model_name = embedding_config.get(
             "model_name",
@@ -66,14 +66,11 @@ class RAGIndexer:
         db_config = self.config.get("database", {})
         self.db_path = db_config.get("path", "etl/elections.db")
 
-        # Charger le modèle d'embedding
         logger.info(f"Chargement du modèle d'embedding: {self.model_name}")
         self.model = SentenceTransformer(self.model_name)
 
-        # Normaliser d'entités
         self.normalizer = EntityNormalizer(config_path)
 
-        # Stockage des chunks et métadonnées
         self.chunks: list[str] = []
         self.metadata: list[ChunkMetadata] = []
 
@@ -107,7 +104,6 @@ class RAGIndexer:
         Returns:
             Tuple (texte du chunk, métadonnées)
         """
-        # Construire le texte descriptif
         region = row.get("region") or "Non spécifiée"
         nom = row.get("nom") or "Inconnue"
         inscrits = row.get("inscrits") or 0
@@ -123,7 +119,6 @@ class RAGIndexer:
             f"Suffrages exprimés: {exprimes:,}, Bulletins nuls: {nuls:,}."
         )
 
-        # Normaliser les entités
         localities = []
         if nom:
             normalized_loc = self.normalizer.normalize_locality(nom)
@@ -180,7 +175,6 @@ class RAGIndexer:
             f"Statut: {elu}."
         )
 
-        # Normaliser les entités
         localities = []
         if circ_nom:
             normalized_loc = self.normalizer.normalize_locality(circ_nom)
@@ -228,7 +222,6 @@ class RAGIndexer:
         region = circonscription.get("region", "Non spécifiée")
         participation = circonscription.get("taux_participation", 0)
 
-        # Construire le résumé des candidats
         candidats_text = []
         parties = []
         for c in sorted(candidats, key=lambda x: x.get("score", 0) or 0, reverse=True):
@@ -250,7 +243,6 @@ class RAGIndexer:
             f"Candidats: {'; '.join(candidats_text[:10])}."  # Limiter à 10
         )
 
-        # Normaliser les localités
         localities = []
         normalized_loc = self.normalizer.normalize_locality(nom)
         if normalized_loc:
@@ -278,7 +270,6 @@ class RAGIndexer:
         conn = self._connect_db()
 
         try:
-            # 1. Chunks pour chaque circonscription
             cursor = conn.execute("SELECT * FROM circonscriptions")
             circonscriptions = {row["id"]: dict(row) for row in cursor.fetchall()}
 
@@ -289,7 +280,6 @@ class RAGIndexer:
 
             logger.info(f"Chunks circonscriptions: {len(circonscriptions)}")
 
-            # 2. Chunks pour chaque candidat
             cursor = conn.execute("SELECT * FROM candidats")
             candidats_by_circ: dict[int, list[dict]] = {}
 
@@ -297,20 +287,17 @@ class RAGIndexer:
                 candidat_data = dict(row)
                 circ_id = candidat_data.get("circonscription_id")
 
-                # Chunk individuel pour le candidat
                 circ_data = circonscriptions.get(circ_id, {})
                 text, metadata = self._create_candidat_chunk(candidat_data, circ_data)
                 self.chunks.append(text)
                 self.metadata.append(metadata)
 
-                # Grouper par circonscription pour chunks agrégés
                 if circ_id not in candidats_by_circ:
                     candidats_by_circ[circ_id] = []
                 candidats_by_circ[circ_id].append(candidat_data)
 
             logger.info(f"Chunks candidats: {len(self.chunks) - len(circonscriptions)}")
 
-            # 3. Chunks agrégés par circonscription
             for circ_id, candidats in candidats_by_circ.items():
                 circ_data = circonscriptions.get(circ_id, {"id": circ_id})
                 text, metadata = self._create_aggregated_chunk(circ_data, candidats)
@@ -335,7 +322,6 @@ class RAGIndexer:
 
         logger.info(f"Création des embeddings pour {len(self.chunks)} chunks...")
 
-        # Créer les embeddings par batch
         embeddings = self.model.encode(
             self.chunks,
             batch_size=self.batch_size,
@@ -346,7 +332,6 @@ class RAGIndexer:
         # Normaliser les vecteurs (pour similarité cosinus avec IndexFlatIP)
         faiss.normalize_L2(embeddings)
 
-        # Créer l'index FAISS
         logger.info(f"Construction de l'index FAISS (dimension: {self.dimension})...")
         index = faiss.IndexFlatIP(self.dimension)  # Inner Product après normalisation = cosinus
         index.add(embeddings.astype(np.float32))
@@ -361,14 +346,11 @@ class RAGIndexer:
         Args:
             index: Index FAISS à sauvegarder
         """
-        # Créer le répertoire si nécessaire
         os.makedirs(os.path.dirname(self.index_path), exist_ok=True)
 
-        # Sauvegarder l'index FAISS
         faiss.write_index(index, self.index_path)
         logger.info(f"Index sauvegardé: {self.index_path}")
 
-        # Sauvegarder les métadonnées
         metadata_dicts = [m.to_dict() for m in self.metadata]
         with open(self.metadata_path, 'wb') as f:
             pickle.dump({
@@ -383,13 +365,8 @@ class RAGIndexer:
         logger.info("Démarrage de l'indexation RAG")
         logger.info("=" * 50)
 
-        # 1. Construire les chunks
         self.build_chunks()
-
-        # 2. Construire l'index
         index = self.build_index()
-
-        # 3. Sauvegarder
         self.save(index)
 
         logger.info("=" * 50)
@@ -400,7 +377,6 @@ class RAGIndexer:
         logger.info("=" * 50)
 
 
-# Script d'exécution standalone
 if __name__ == "__main__":
     logging.basicConfig(
         level=logging.INFO,

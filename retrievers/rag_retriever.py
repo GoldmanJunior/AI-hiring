@@ -1,7 +1,8 @@
-"""
-Retriever RAG avec recherche vectorielle FAISS.
-Recherche les chunks les plus pertinents pour une requête.
-"""
+import sys
+import pathlib
+_project_root = str(pathlib.Path(__file__).resolve().parent.parent)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
 
 import os
 import pickle
@@ -58,7 +59,6 @@ class RAGRetriever:
         """
         self.config = self._load_config(config_path)
 
-        # Configuration
         embedding_config = self.config.get("embedding", {})
         self.model_name = embedding_config.get(
             "model_name",
@@ -73,15 +73,12 @@ class RAGRetriever:
         self.top_k = retrieval_config.get("top_k", 5)
         self.min_confidence = retrieval_config.get("min_confidence", 0.5)
 
-        # Charger le modèle d'embedding
         logger.info(f"Chargement du modèle d'embedding: {self.model_name}")
         self.model = SentenceTransformer(self.model_name)
 
-        # Charger l'index et les métadonnées
         self.index = self._load_index()
         self.metadata, self.chunks = self._load_metadata()
 
-        # Normaliser d'entités
         self.normalizer = EntityNormalizer(config_path)
 
         logger.info(
@@ -167,7 +164,6 @@ class RAGRetriever:
             result_localities = set(result.localities)
             result_parties = set(result.parties)
 
-            # Calculer le boost basé sur le match d'entités
             locality_match = len(query_localities & result_localities) > 0
             party_match = len(query_parties & result_parties) > 0
 
@@ -177,7 +173,6 @@ class RAGRetriever:
             if party_match:
                 boost += 0.2
 
-            # Créer un nouveau résultat avec score boosté
             boosted_result = RetrievalResult(
                 chunk_id=result.chunk_id,
                 text=result.text,
@@ -190,7 +185,6 @@ class RAGRetriever:
             )
             boosted_results.append(boosted_result)
 
-        # Re-trier par score
         boosted_results.sort(key=lambda x: x.score, reverse=True)
         return boosted_results
 
@@ -216,7 +210,6 @@ class RAGRetriever:
         top_k = top_k or self.top_k
         min_confidence = min_confidence if min_confidence is not None else self.min_confidence
 
-        # Normaliser la requête si demandé
         processed_query = query
         query_entities = {"localities": [], "parties": []}
 
@@ -226,10 +219,8 @@ class RAGRetriever:
             if processed_query != query:
                 logger.info(f"Requête normalisée: '{query}' -> '{processed_query}'")
 
-        # Encoder la requête
         query_vector = self._encode_query(processed_query)
 
-        # Recherche dans FAISS
         scores, indices = self.index.search(query_vector, top_k * 2)  # Récupérer plus pour filtrage
 
         results = []
@@ -238,7 +229,7 @@ class RAGRetriever:
                 continue
 
             # Convertir le score (inner product après normalisation = similarité cosinus)
-            # Score est déjà entre -1 et 1, on le normalise en 0-1
+            # Score entre -1 et 1, normalisé en 0-1
             # Convertir en float Python natif (FAISS retourne numpy.float32)
             normalized_score = float((score + 1) / 2)
 
@@ -258,11 +249,9 @@ class RAGRetriever:
             )
             results.append(result)
 
-        # Filtrer/booster par entités
         if query_entities["localities"] or query_entities["parties"]:
             results = self._filter_by_entities(results, query_entities)
 
-        # Limiter aux top_k
         results = results[:top_k]
 
         top_score = results[0].score if results else 0
@@ -290,7 +279,6 @@ class RAGRetriever:
         """
         results = self.search(query, top_k)
 
-        # Formater le contexte pour le LLM
         context_parts = []
         for i, r in enumerate(results, 1):
             context_parts.append(
@@ -307,7 +295,6 @@ class RAGRetriever:
         }
 
 
-# Test standalone
 if __name__ == "__main__":
     logging.basicConfig(
         level=logging.INFO,

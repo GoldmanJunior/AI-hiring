@@ -1,14 +1,7 @@
-"""
-Schémas Pydantic pour l'API FastAPI.
-Définition des modèles de requête et réponse.
-"""
-
 from pydantic import BaseModel, Field
 from typing import Optional
 from enum import Enum
 
-
-# ===== ENUMS =====
 
 class RouteMethod(str, Enum):
     """Méthode de routage."""
@@ -16,8 +9,6 @@ class RouteMethod(str, Enum):
     RAG = "rag"
     TOC = "toc"
 
-
-# ===== REQUEST MODELS =====
 
 class QueryRequest(BaseModel):
     """Requête de question via ToC (Tree of Clarifications)."""
@@ -36,8 +27,6 @@ class QueryRequest(BaseModel):
             }
         }
 
-
-# ===== RESPONSE MODELS =====
 
 class SourceModel(BaseModel):
     """Source d'une réponse."""

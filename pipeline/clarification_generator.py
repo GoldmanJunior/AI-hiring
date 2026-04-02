@@ -1,9 +1,5 @@
-"""
-Clarification Generator - Génère des interprétations multiples d'une requête.
-Partie du système Tree of Clarifications (ToC).
-"""
-
 import os
+import time
 import logging
 import json
 import re
@@ -13,6 +9,7 @@ from typing import Optional
 from groq import Groq
 from dotenv import load_dotenv
 import yaml
+import observability as obs
 
 logger = logging.getLogger(__name__)
 load_dotenv()
@@ -105,7 +102,6 @@ Réponds UNIQUEMENT avec le JSON, sans texte additionnel."""
         """
         self.config = self._load_config(config_path)
 
-        # Configuration
         toc_config = self.config.get("toc", {})
         self.min_dqs = toc_config.get("min_disambiguations", 2)
         self.max_dqs = toc_config.get("max_disambiguations", 5)
@@ -114,7 +110,6 @@ Réponds UNIQUEMENT avec le JSON, sans texte additionnel."""
         self.model = groq_config.get("model", "llama-3.3-70b-versatile")
         self.temperature = toc_config.get("generation_temperature", 0.7)
 
-        # Client Groq
         api_key = os.getenv("GROQ_API_KEY")
         if not api_key:
             raise ValueError("GROQ_API_KEY non définie")
@@ -137,7 +132,6 @@ Réponds UNIQUEMENT avec le JSON, sans texte additionnel."""
         """
         query_lower = query.lower()
 
-        # Régions/localités connues
         known_localities = [
             "bagoue", "poro", "tchologo", "gbeke", "abidjan", "bouake",
             "yamoussoukro", "korhogo", "daloa", "san-pedro", "gagnoa",
@@ -145,7 +139,6 @@ Réponds UNIQUEMENT avec le JSON, sans texte additionnel."""
             "divo", "man", "bondoukou", "odienne", "ferkessedougou"
         ]
 
-        # Partis connus
         known_parties = [
             "rhdp", "pdci", "fpi", "independant", "indépendant",
             "udpci", "ppa-ci", "eds"
@@ -166,10 +159,8 @@ Réponds UNIQUEMENT avec le JSON, sans texte additionnel."""
             logger.warning("Réponse LLM vide")
             return []
 
-        # Nettoyer la réponse
         text = response_text.strip()
 
-        # Enlever les backticks markdown si présents
         text = re.sub(r'^```json?\s*', '', text, flags=re.IGNORECASE | re.MULTILINE)
         text = re.sub(r'\s*```$', '', text, flags=re.MULTILINE)
         text = text.strip()
@@ -186,7 +177,6 @@ Réponds UNIQUEMENT avec le JSON, sans texte additionnel."""
             logger.error(f"Erreur parsing JSON: {e}")
             logger.warning(f"Réponse brute (premiers 500 chars): {response_text[:500]}")
 
-            # Tenter de parser comme liste directe
             try:
                 list_match = re.search(r'\[[\s\S]*\]', text)
                 if list_match:
@@ -207,12 +197,10 @@ Réponds UNIQUEMENT avec le JSON, sans texte additionnel."""
                 logger.warning(f"DQ invalide - champ manquant: {field}")
                 return None
 
-        # Valider la confiance
         confidence = dq_data.get("confidence", 0.5)
         if not isinstance(confidence, (int, float)) or not 0 <= confidence <= 1:
             confidence = 0.5
 
-        # Extraire les entités
         entities = dq_data.get("entities", {})
         if not isinstance(entities, dict):
             entities = {}
@@ -220,7 +208,6 @@ Réponds UNIQUEMENT avec le JSON, sans texte additionnel."""
         entities.setdefault("parties", [])
         entities.setdefault("metrics", [])
 
-        # Extraire les hypothèses
         assumptions = dq_data.get("assumptions", [])
         if not isinstance(assumptions, list):
             assumptions = []
@@ -247,40 +234,53 @@ Réponds UNIQUEMENT avec le JSON, sans texte additionnel."""
         """
         logger.info(f"Génération de clarifications pour: '{query[:50]}...'")
 
-        # Construire le prompt
         user_prompt = f"""REQUÊTE UTILISATEUR:
 "{query}"
 
 Génère {self.min_dqs} à {self.max_dqs} interprétations distinctes de cette requête.
 Retourne UNIQUEMENT le JSON structuré."""
 
+        input_messages = [
+            {"role": "system", "content": self.SYSTEM_PROMPT},
+            {"role": "user", "content": user_prompt},
+        ]
+
         try:
+            _t0 = time.monotonic()
             response = self.groq_client.chat.completions.create(
                 model=self.model,
-                messages=[
-                    {"role": "system", "content": self.SYSTEM_PROMPT},
-                    {"role": "user", "content": user_prompt}
-                ],
+                messages=input_messages,
                 temperature=self.temperature,
                 max_tokens=2048
             )
+            _duration_ms = int((time.monotonic() - _t0) * 1000)
 
             response_text = response.choices[0].message.content
             logger.debug(f"Réponse LLM reçue ({len(response_text) if response_text else 0} chars)")
+
+            obs.record_generation(
+                name="clarification_generation",
+                model=self.model,
+                input_messages=input_messages,
+                output=response_text or "",
+                prompt_tokens=response.usage.prompt_tokens,
+                completion_tokens=response.usage.completion_tokens,
+                total_tokens=response.usage.total_tokens,
+                temperature=self.temperature,
+                duration_ms=_duration_ms,
+                metadata={"query_length": len(query)},
+            )
+
             dqs_data = self._parse_llm_response(response_text)
 
-            # Valider et convertir les DQs
             valid_dqs = []
             for dq_data in dqs_data:
                 dq = self._validate_dq(dq_data, query)
                 if dq:
                     valid_dqs.append(dq)
 
-            # S'assurer qu'on a au moins une DQ
             if not valid_dqs:
-                # Extraire des entités basiques de la requête
                 entities = self._extract_basic_entities(query)
-                # Créer une DQ par défaut
                 valid_dqs.append(DisambiguatedQuestion(
                     dq_id="DQ_DEFAULT",
                     original_query=query,
@@ -292,10 +292,7 @@ Retourne UNIQUEMENT le JSON structuré."""
                 ))
                 logger.info(f"DQ par défaut créée avec entités: {entities}")
 
-            # Trier par confiance
             valid_dqs.sort(key=lambda x: x.confidence, reverse=True)
-
-            # Limiter au maximum
             valid_dqs = valid_dqs[:self.max_dqs]
 
             tree = ClarificationTree(
@@ -313,9 +310,7 @@ Retourne UNIQUEMENT le JSON structuré."""
 
         except Exception as e:
             logger.error(f"Erreur génération: {e}")
-            # Extraire des entités basiques de la requête
             entities = self._extract_basic_entities(query)
-            # Retourner un arbre minimal
             return ClarificationTree(
                 original_query=query,
                 disambiguated_questions=[
@@ -346,7 +341,6 @@ Retourne UNIQUEMENT le JSON structuré."""
         return [dq.explicit_question for dq in tree.disambiguated_questions]
 
 
-# Test standalone
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
 

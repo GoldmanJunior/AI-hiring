@@ -9,10 +9,15 @@ Usage:
     python -m scripts.index_database --force  # Réindexer même si l'index existe
 """
 
+import sys
+import pathlib
+_project_root = str(pathlib.Path(__file__).resolve().parent.parent)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
 import argparse
 import logging
 import os
-import sys
 
 from retrievers.rag_indexer import RAGIndexer
 

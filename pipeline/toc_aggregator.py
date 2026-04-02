@@ -1,9 +1,11 @@
-"""
-ToC Aggregator - Agrège les résultats de multiples DQs.
-Combine les résultats SQL et RAG en une réponse cohérente.
-"""
+import sys
+import pathlib
+_project_root = str(pathlib.Path(__file__).resolve().parent.parent)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
 
 import os
+import time
 import logging
 from dataclasses import dataclass, asdict
 from typing import Optional
@@ -11,6 +13,7 @@ from typing import Optional
 from groq import Groq
 from dotenv import load_dotenv
 import yaml
+import observability as obs
 
 from pipeline.toc_pruner import PruningResult, PrunedTree
 from retrievers.citation_manager import Citation, CitedResponse
@@ -111,12 +114,10 @@ Ne mentionne pas le processus interne de désambiguïsation."""
         """
         self.config = self._load_config(config_path)
 
-        # Configuration Groq
         groq_config = self.config.get("groq", {})
         self.model = groq_config.get("model", "llama-3.3-70b-versatile")
         self.temperature = groq_config.get("temperature", 0.3)
 
-        # Client Groq
         api_key = os.getenv("GROQ_API_KEY")
         if api_key:
             self.groq_client = Groq(api_key=api_key)
@@ -169,10 +170,8 @@ Réponse: {result.answer if result.success else f"Erreur: {result.error}"}
                 continue
 
             if result.route == "sql":
-                # Extraire des faits concis de la réponse SQL
                 sql_facts.append(f"{result.question}: {result.answer[:200]}")
             else:
-                # Extraire des insights de la réponse RAG
                 rag_insights.append(f"{result.question}: {result.answer[:200]}")
 
         return sql_facts, rag_insights
@@ -184,7 +183,6 @@ Réponse: {result.answer if result.success else f"Erreur: {result.error}"}
 
         for result in results:
             for source in result.sources:
-                # Créer une clé unique pour déduplication
                 key = f"{source.table_name}:{source.row_id}"
                 if key not in seen:
                     seen.add(key)
@@ -221,17 +219,46 @@ Réponse: {result.answer if result.success else f"Erreur: {result.error}"}
             interpretations=interpretations_text
         )
 
+        _messages = [{"role": "user", "content": prompt}]
+
         try:
+            _t0 = time.monotonic()
             response = self.groq_client.chat.completions.create(
                 model=self.model,
-                messages=[{"role": "user", "content": prompt}],
+                messages=_messages,
                 temperature=self.temperature,
                 max_tokens=1024
             )
-            return response.choices[0].message.content.strip()
+            _duration_ms = int((time.monotonic() - _t0) * 1000)
+            output = response.choices[0].message.content.strip()
+
+            obs.record_generation(
+                name="aggregation_synthesis",
+                model=self.model,
+                input_messages=_messages,
+                output=output,
+                prompt_tokens=response.usage.prompt_tokens,
+                completion_tokens=response.usage.completion_tokens,
+                total_tokens=response.usage.total_tokens,
+                temperature=self.temperature,
+                duration_ms=_duration_ms,
+                metadata={
+                    "num_results": len(results),
+                    "successful_results": sum(1 for r in results if r.success),
+                },
+            )
+
+            return output
 
         except Exception as e:
             logger.error(f"Erreur synthèse LLM: {e}")
+            obs.record_generation(
+                name="aggregation_synthesis",
+                model=self.model,
+                input_messages=_messages,
+                output="",
+                error=str(e),
+            )
             return self._synthesize_simple(results)
 
     def _synthesize_simple(self, results: list[DQResult]) -> str:
@@ -269,21 +296,13 @@ Réponse: {result.answer if result.success else f"Erreur: {result.error}"}
         """
         logger.info(f"Agrégation de {len(results)} résultats...")
 
-        # Extraire faits et insights
         sql_facts, rag_insights = self._extract_facts_and_insights(results)
-
-        # Collecter les sources
         sources = self._collect_sources(results)
-
-        # Calculer la confiance
         confidence = self._calculate_confidence(results)
 
-        # Synthétiser la réponse finale
         if len(results) == 1:
-            # Un seul résultat, pas besoin de synthèse
             final_answer = results[0].answer if results[0].success else f"Erreur: {results[0].error}"
         else:
-            # Plusieurs résultats, synthétiser avec LLM
             final_answer = self._synthesize_with_llm(original_query, results)
 
         response = AggregatedResponse(
@@ -343,13 +362,11 @@ Réponse: {result.answer if result.success else f"Erreur: {result.error}"}
         return "\n".join(lines)
 
 
-# Test standalone
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
 
     aggregator = ToCAggregator()
 
-    # Simuler des résultats
     from citation_manager import Citation
 
     test_results = [

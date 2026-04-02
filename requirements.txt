@@ -51,6 +51,9 @@ pydantic>=2.0.0
 # Streaming SSE
 sse-starlette>=1.6.0
 
+# ===== OBSERVABILITY =====
+langfuse>=2.0.0
+
 # ===== DEV (optionnel) =====
 # pytest>=7.0.0
 # black>=23.0.0
